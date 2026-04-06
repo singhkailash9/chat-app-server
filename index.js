@@ -7,6 +7,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const messageRoutes = require("./routes/messages");
+const onlineUsers = new Map();
+const Message = require("./models/Message");
 
 dotenv.config();
 connectDB();
@@ -16,12 +18,12 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: "http://localhost:5000",
+        origin: "http://localhost:5173",
         methods: ["GET", "POST"]
     }
 });
 
-app.use(cors({ origin: "http://localhost:5000"}));
+app.use(cors({ origin: "http://localhost:5173"}));
 // app.use(cors({ origin: '*' }));
 
 app.use(express.json());
@@ -52,17 +54,25 @@ io.on("connection", (socket)=> {
     console.log(`User connected: ${socket.id}`);
 
     socket.on("joinRoom", ({room})=>{
+        const prev = socket.data.room;
+        if (prev === room) return;
+        if (prev) {
+            socket.leave(prev);
+            onlineUsers.delete(socket.id);
+            io.to(prev).emit('onlineUsers', getRoomUsers(prev));
+        }
         socket.join(room);
         socket.data.room = room;
-        
         const username = socket.data.username;
+
+        onlineUsers.set(socket.id, { username, room });
         console.log(`${username} joined the room: ${room}`);
 
         socket.to(room).emit("userJoined", {message: `${username} joined the chat`});
+        io.to(room).emit('onlineUsers', getRoomUsers(room));
     });
 
     socket.on("sendMessage", async({text, room})=>{
-        const Message = require("./models/Message");
         const username = socket.data.username;
         const userId = socket.data.userId;
         const saved = await Message.create({
@@ -82,11 +92,21 @@ io.on("connection", (socket)=> {
     socket.on("disconnect", ()=>{
         const {username, room} = socket.data;
         if(username && room) {
+            onlineUsers.delete(socket.id);
             socket.to(room).emit("userLeft", {message: `${username} left the chat`});
+            io.to(room).emit('onlineUsers', getRoomUsers(room));
         }
         console.log(`User disconnected: ${socket.id}`);
     });
 });
+
+function getRoomUsers(room) {
+  const users = [];
+  onlineUsers.forEach((data) => {
+    if (data.room === room) users.push(data.username);
+  });
+  return users;
+}
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, ()=> console.log(`Server running on port ${PORT}`));
